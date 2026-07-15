@@ -17,6 +17,6 @@
     "jsx": "react-jsx",
     "types": ["node"]
   },
-  "include": ["src", "server", "shared"],
+  "include": ["src", "server", "shared", "api"],
   "references": []
 }

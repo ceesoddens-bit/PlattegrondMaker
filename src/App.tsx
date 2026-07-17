@@ -1,4 +1,4 @@
-import { AlertTriangle, Download, FileImage, ImageUp, Layers3, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { AlertTriangle, Download, FileImage, ImageUp, Layers3, Loader2, RefreshCw, Sparkles, LogOut, KeyRound } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FloorPlan } from "../shared/floorplan";
 import { FloorPlanSvg } from "./components/FloorPlanSvg";
@@ -43,10 +43,32 @@ export default function App() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:8787" : "";
 
+  const [savedPassword, setSavedPassword] = useState<string>(() => {
+    return localStorage.getItem("app_password") || "";
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return localStorage.getItem("app_authenticated") === "true";
+  });
+  const [loginPasswordInput, setLoginPasswordInput] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
+
   useEffect(() => {
+    if (!isAuthenticated) return;
     let cancelled = false;
-    fetch(`${apiBase}/api/health`)
-      .then((response) => response.json())
+    fetch(`${apiBase}/api/health`, {
+      headers: {
+        Authorization: `Bearer ${savedPassword}`
+      }
+    })
+      .then((response) => {
+        if (response.status === 401) {
+          handleLogout();
+          throw new Error("Sessie verlopen");
+        }
+        return response.json();
+      })
       .then((status: ApiStatus) => {
         if (!cancelled) {
           setApiStatus(status);
@@ -60,7 +82,44 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase]);
+  }, [apiBase, isAuthenticated, savedPassword]);
+
+  function handleLogout() {
+    localStorage.removeItem("app_authenticated");
+    localStorage.removeItem("app_password");
+    setIsAuthenticated(false);
+    setSavedPassword("");
+    setLoginPasswordInput("");
+    setLoginError("");
+  }
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError("");
+    setIsVerifying(true);
+    try {
+      const response = await fetch(`${apiBase}/api/verify-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ password: loginPasswordInput })
+      });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        localStorage.setItem("app_authenticated", "true");
+        localStorage.setItem("app_password", loginPasswordInput);
+        setSavedPassword(loginPasswordInput);
+        setIsAuthenticated(true);
+      } else {
+        setLoginError(data.error || "Ongeldig wachtwoord.");
+      }
+    } catch (caught) {
+      setLoginError("Kon geen verbinding maken met de server.");
+    } finally {
+      setIsVerifying(false);
+    }
+  }
 
   const previews = useMemo(
     () =>
@@ -106,6 +165,70 @@ export default function App() {
     setError("");
   }
 
+  if (!isAuthenticated) {
+    return (
+      <div className="login-overlay">
+        <div className="login-card">
+          <div className="login-header">
+            <div className="login-logo">
+              <Sparkles size={26} />
+            </div>
+            <h1>Restaurant Plattegrond AI</h1>
+            <p>Voer het wachtwoord in om toegang te krijgen.</p>
+          </div>
+
+          <form className="login-form" onSubmit={handleLogin}>
+            <div className="login-field">
+              <label htmlFor="current-password">Wachtwoord</label>
+              <div className="login-input-wrapper">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  id="current-password"
+                  name="password"
+                  autoComplete="current-password"
+                  placeholder="Voer wachtwoord in"
+                  required
+                  value={loginPasswordInput}
+                  onChange={(e) => setLoginPasswordInput(e.target.value)}
+                  disabled={isVerifying}
+                />
+                <button
+                  type="button"
+                  className="login-toggle-show"
+                  onClick={() => setShowPassword(!showPassword)}
+                  disabled={isVerifying}
+                >
+                  {showPassword ? "Verberg" : "Toon"}
+                </button>
+              </div>
+            </div>
+
+            {loginError && (
+              <div className="login-error">
+                <AlertTriangle size={18} />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            <button className="login-button" type="submit" disabled={isVerifying}>
+              {isVerifying ? (
+                <>
+                  <Loader2 className="spin" size={20} />
+                  Verifiëren...
+                </>
+              ) : (
+                <>
+                  <KeyRound size={20} />
+                  Inloggen
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   async function generateFloorPlan() {
     setError("");
 
@@ -134,8 +257,15 @@ export default function App() {
 
       const response = await fetch(`${apiBase}/api/generate-floorplan`, {
         method: "POST",
+        headers: {
+          Authorization: `Bearer ${savedPassword}`
+        },
         body: formData
       });
+      if (response.status === 401) {
+        handleLogout();
+        throw new Error("Sessie verlopen. Log opnieuw in.");
+      }
       const data = await response.json();
 
       if (!response.ok) {
@@ -338,6 +468,10 @@ export default function App() {
               </div>
             </div>
           )}
+          <button className="logout-btn" type="button" onClick={handleLogout}>
+            <LogOut size={16} />
+            Uitloggen
+          </button>
         </aside>
 
         <section className="canvas-panel">

@@ -28,6 +28,37 @@ const upload = multer({
 
 app.use(express.json({ limit: "1mb" }));
 
+const APP_PASSWORD = process.env.APP_PASSWORD || "plattegrond";
+
+app.post("/api/verify-password", (req, res) => {
+  const { password } = req.body;
+  if (password === APP_PASSWORD) {
+    res.json({ ok: true });
+  } else {
+    res.status(401).json({ ok: false, error: "Ongeldig wachtwoord." });
+  }
+});
+
+// Middleware om alle overige /api/* endpoints te beveiligen
+app.use((req, res, next) => {
+  if (req.path === "/api/verify-password") {
+    return next();
+  }
+  if (req.path.startsWith("/api/")) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Ongeautoriseerd: Wachtwoord is verplicht." });
+      return;
+    }
+    const token = authHeader.substring(7);
+    if (token !== APP_PASSWORD) {
+      res.status(401).json({ error: "Ongeautoriseerd: Ongeldig wachtwoord." });
+      return;
+    }
+  }
+  next();
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,

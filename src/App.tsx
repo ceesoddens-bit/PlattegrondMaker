@@ -27,6 +27,65 @@ type ApiStatus = {
 };
 
 const maxFiles = 6;
+const maxUploadFileBytes = 420 * 1024;
+const maxUploadImageDimension = 1600;
+
+async function optimizeUploadImage(file: File): Promise<File> {
+  if (file.size <= maxUploadFileBytes) {
+    return file;
+  }
+
+  const bitmap = await createImageBitmap(file);
+  let width = bitmap.width;
+  let height = bitmap.height;
+  const initialScale = Math.min(1, maxUploadImageDimension / Math.max(width, height));
+  width = Math.max(1, Math.round(width * initialScale));
+  height = Math.max(1, Math.round(height * initialScale));
+  let smallestBlob: Blob | null = null;
+
+  try {
+    for (let resizeAttempt = 0; resizeAttempt < 4; resizeAttempt += 1) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("De afbeelding kon niet worden verwerkt.");
+      }
+      context.drawImage(bitmap, 0, 0, width, height);
+
+      for (const quality of [0.82, 0.7, 0.58, 0.46]) {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", quality));
+        if (!blob) {
+          continue;
+        }
+        if (!smallestBlob || blob.size < smallestBlob.size) {
+          smallestBlob = blob;
+        }
+        if (blob.size <= maxUploadFileBytes) {
+          return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.webp`, {
+            type: "image/webp",
+            lastModified: file.lastModified
+          });
+        }
+      }
+
+      width = Math.max(1, Math.round(width * 0.78));
+      height = Math.max(1, Math.round(height * 0.78));
+    }
+  } finally {
+    bitmap.close();
+  }
+
+  if (!smallestBlob || smallestBlob.size > maxUploadFileBytes) {
+    throw new Error(`${file.name} kon niet klein genoeg worden gemaakt voor de online versie.`);
+  }
+
+  return new File([smallestBlob], `${file.name.replace(/\.[^.]+$/, "")}.webp`, {
+    type: "image/webp",
+    lastModified: file.lastModified
+  });
+}
 
 export default function App() {
   const [blueprint, setBlueprint] = useState<File | null>(null);
@@ -133,26 +192,49 @@ export default function App() {
   const blueprintPreview = useMemo(() => (blueprint ? URL.createObjectURL(blueprint) : ""), [blueprint]);
   const styleReferencePreview = useMemo(() => (styleReference ? URL.createObjectURL(styleReference) : ""), [styleReference]);
 
-  function addFiles(nextFiles: FileList | File[]) {
-    const accepted = Array.from(nextFiles).filter((file) => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
-    const merged = [...files, ...accepted].slice(0, maxFiles);
-    setFiles(merged);
-    if (accepted.length !== Array.from(nextFiles).length) {
+  useEffect(() => () => previews.forEach(({ url }) => URL.revokeObjectURL(url)), [previews]);
+  useEffect(
+    () => () => {
+      if (blueprintPreview) URL.revokeObjectURL(blueprintPreview);
+    },
+    [blueprintPreview]
+  );
+  useEffect(
+    () => () => {
+      if (styleReferencePreview) URL.revokeObjectURL(styleReferencePreview);
+    },
+    [styleReferencePreview]
+  );
+
+  async function addFiles(nextFiles: FileList | File[]) {
+    const incoming = Array.from(nextFiles);
+    const valid = incoming.filter((file) => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
+    const accepted = valid.slice(0, Math.max(0, maxFiles - files.length));
+    try {
+      const optimized = await Promise.all(accepted.map(optimizeUploadImage));
+      setFiles((current) => [...current, ...optimized].slice(0, maxFiles));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "De afbeeldingen konden niet worden verwerkt.");
+      return;
+    }
+    if (valid.length !== incoming.length) {
       setError("Alleen JPG, PNG en WebP-afbeeldingen zijn toegestaan.");
+    } else if (accepted.length !== valid.length) {
+      setError(`Je kunt maximaal ${maxFiles} restaurantfoto's toevoegen.`);
     } else {
       setError("");
     }
   }
 
-  function setBlueprintFile(nextFiles: FileList | File[]) {
-    setSingleImageFile(nextFiles, setBlueprint, "De plattegrondtekening moet een JPG, PNG of WebP-afbeelding zijn.");
+  async function setBlueprintFile(nextFiles: FileList | File[]) {
+    await setSingleImageFile(nextFiles, setBlueprint, "De plattegrondtekening moet een JPG, PNG of WebP-afbeelding zijn.");
   }
 
-  function setStyleReferenceFile(nextFiles: FileList | File[]) {
-    setSingleImageFile(nextFiles, setStyleReference, "Het voorbeeld eindresultaat moet een JPG, PNG of WebP-afbeelding zijn.");
+  async function setStyleReferenceFile(nextFiles: FileList | File[]) {
+    await setSingleImageFile(nextFiles, setStyleReference, "Het voorbeeld eindresultaat moet een JPG, PNG of WebP-afbeelding zijn.");
   }
 
-  function setSingleImageFile(nextFiles: FileList | File[], setter: (file: File) => void, invalidMessage: string) {
+  async function setSingleImageFile(nextFiles: FileList | File[], setter: (file: File) => void, invalidMessage: string) {
     const [file] = Array.from(nextFiles);
     if (!file) {
       return;
@@ -161,8 +243,12 @@ export default function App() {
       setError(invalidMessage);
       return;
     }
-    setter(file);
-    setError("");
+    try {
+      setter(await optimizeUploadImage(file));
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "De afbeelding kon niet worden verwerkt.");
+    }
   }
 
   if (!isAuthenticated) {
@@ -307,13 +393,13 @@ export default function App() {
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              setBlueprintFile(event.dataTransfer.files);
+              void setBlueprintFile(event.dataTransfer.files);
             }}
           >
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              onChange={(event) => setBlueprintFile(event.target.files ?? [])}
+              onChange={(event) => void setBlueprintFile(event.target.files ?? [])}
             />
             <FileImage size={26} />
             <strong>Plattegrondtekening</strong>
@@ -338,13 +424,13 @@ export default function App() {
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              setStyleReferenceFile(event.dataTransfer.files);
+              void setStyleReferenceFile(event.dataTransfer.files);
             }}
           >
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              onChange={(event) => setStyleReferenceFile(event.target.files ?? [])}
+              onChange={(event) => void setStyleReferenceFile(event.target.files ?? [])}
             />
             <Sparkles size={24} />
             <strong>Voorbeeld eindstijl</strong>
@@ -369,14 +455,14 @@ export default function App() {
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
               event.preventDefault();
-              addFiles(event.dataTransfer.files);
+              void addFiles(event.dataTransfer.files);
             }}
           >
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
               multiple
-              onChange={(event) => addFiles(event.target.files ?? [])}
+              onChange={(event) => void addFiles(event.target.files ?? [])}
             />
             <ImageUp size={24} />
             <strong>Restaurantfoto’s</strong>

@@ -18,8 +18,18 @@ const upload = multer({
     }
 });
 app.use(express.json({ limit: "1mb" }));
-const APP_PASSWORD = process.env.APP_PASSWORD || "plattegrond";
+const APP_PASSWORD = process.env.APP_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "plattegrond");
+function requireConfiguredPassword(res) {
+    if (APP_PASSWORD) {
+        return true;
+    }
+    res.status(503).json({ error: "APP_PASSWORD ontbreekt in de serverconfiguratie." });
+    return false;
+}
 app.post("/api/verify-password", (req, res) => {
+    if (!requireConfiguredPassword(res)) {
+        return;
+    }
     const { password } = req.body;
     if (password === APP_PASSWORD) {
         res.json({ ok: true });
@@ -34,6 +44,9 @@ app.use((req, res, next) => {
         return next();
     }
     if (req.path.startsWith("/api/")) {
+        if (!requireConfiguredPassword(res)) {
+            return;
+        }
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             res.status(401).json({ error: "Ongeautoriseerd: Wachtwoord is verplicht." });
